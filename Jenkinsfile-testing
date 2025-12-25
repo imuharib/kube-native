@@ -3,7 +3,7 @@ pipeline {
     agent any    
     
     environment {
-        MSR_FQDN_PORT='47xceimw9rxjo6nih-671115f0ee76620a4180abf4.labs.strigo.io:4443'
+        MSR_FQDN_PORT = '47xceimw9rxjo6nih-671115f0ee76620a4180abf4.labs.strigo.io:4443'
     }
 
     stages {
@@ -12,13 +12,21 @@ pipeline {
                 MSR_ACCESS_KEY = credentials('jenkins-msr-access-token')
             }
             steps {
-                sh 'docker --context=testserver login -u jenkins -p ${MSR_ACCESS_KEY} ${MSR_FQDN_PORT}'
-                sh 'docker --context=testserver image pull ${MSR_FQDN_PORT}/engineering/api-test:${TAG}'
-                sh 'kubectl run $(echo $TAG | tr . -) \
-                     -n testing \
-                     --restart=Never --attach=True \
-                     --overrides=\'{"apiVersion": "v1", "spec": {"nodeSelector": { "kubernetes.io/hostname": "testing" }}}\' \
-                     --image=${MSR_FQDN_PORT}/engineering/api-test:${TAG}'
+                sh '''
+                echo "DEBUG: Docker version (local)"
+                docker version
+
+                echo "DEBUG: Docker trust version (local)"
+                docker trust version || echo "docker trust not installed locally"
+
+                docker --context=testserver login -u jenkins -p ${MSR_ACCESS_KEY} ${MSR_FQDN_PORT}
+                docker --context=testserver image pull ${MSR_FQDN_PORT}/engineering/api-test:${TAG}
+                kubectl run $(echo $TAG | tr . -) \
+                    -n testing \
+                    --restart=Never --attach=True \
+                    --overrides='{"apiVersion": "v1", "spec": {"nodeSelector": { "kubernetes.io/hostname": "testing" }}}' \
+                    --image=${MSR_FQDN_PORT}/engineering/api-test:${TAG}
+                '''
             }
         }
         stage('Integration') {
@@ -27,55 +35,75 @@ pipeline {
                 MAJORMINOR = '0.0'
             }
             steps {
-                // deploy our application for integration testing
-                sh 'BUILDNO=$(echo ${TAG} | sed "s/.*\\.//"); \
-                    helm install integrationtest --namespace testing --wait helm --set API.tag=rc-${MAJORMINOR}.${BUILDNO} --set environment.host=testing'
-                // make sure all pods are up before we try to run the integration tests
-                sh 'DBPOD=$(kubectl get pod -l app=db -n testing -o jsonpath="{.items[0].metadata.name}"); \
-                    APIPOD=$(kubectl get pod -l app=api -n testing -o jsonpath="{.items[0].metadata.name}"); \
-                    kubectl wait --timeout=60s --for=condition=Ready pod/${DBPOD} -n testing; \
-                    kubectl wait --timeout=60s --for=condition=Ready pod/${APIPOD} -n testing'
+                sh '''
+                BUILDNO=$(echo ${TAG} | sed "s/.*\\.//")
+                helm install integrationtest --namespace testing --wait helm --set API.tag=rc-${MAJORMINOR}.${BUILDNO} --set environment.host=testing
+                
+                DBPOD=$(kubectl get pod -l app=db -n testing -o jsonpath="{.items[0].metadata.name}")
+                APIPOD=$(kubectl get pod -l app=api -n testing -o jsonpath="{.items[0].metadata.name}")
+                kubectl wait --timeout=60s --for=condition=Ready pod/${DBPOD} -n testing
+                kubectl wait --timeout=60s --for=condition=Ready pod/${APIPOD} -n testing
 
-                // run integration tests
-                sh 'BUILDNO=$(echo ${TAG} | sed "s/.*\\.//"); \
-                    kubectl run integration-${BUILDNO} \
-                        --image ${MSR_FQDN_PORT}/engineering/api-build:integration-${MAJORMINOR}.${BUILDNO} \
-                        -n testing --restart=Never --attach=True;'
+                BUILDNO=$(echo ${TAG} | sed "s/.*\\.//")
+                kubectl run integration-${BUILDNO} \
+                    --image ${MSR_FQDN_PORT}/engineering/api-build:integration-${MAJORMINOR}.${BUILDNO} \
+                    -n testing --restart=Never --attach=True
+                '''
             }
         }
         stage('Finalization') {
             environment {
-              MSR_ACCESS_KEY=credentials('jenkins-msr-access-token')
-              MAJORMINOR = '0.0'
-              DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE=credentials('jenkins-content-trust')
-              JENKINS_PK=credentials('jenkins-key')
+                MSR_ACCESS_KEY = credentials('jenkins-msr-access-token')
+                MAJORMINOR = '0.0'
+                DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE = credentials('jenkins-content-trust')
+                JENKINS_PK = credentials('jenkins-key')
             }
             steps {
-                sh 'docker --context=stageserver login -u jenkins -p ${MSR_ACCESS_KEY} ${MSR_FQDN_PORT} ; \
-                BUILDNO=$(echo ${TAG} | sed "s/.*\\.//"); \
-                curl -k https://${MSR_FQDN_PORT}/ca \
-                    -o /usr/local/share/ca-certificates/${MSR_FQDN_PORT}.crt ; \
-                update-ca-certificates; \
-                echo "DEBUG: checking if docker trust is installed"; \
-                docker trust version || echo "docker trust not installed"; \
-                echo "DEBUG: loading trust key"; \
-                docker --context=stageserver trust key load ${JENKINS_PK}; \
-                echo "DEBUG: pulling and tagging image"; \
-                docker --context=stageserver image pull \
-                    ${MSR_FQDN_PORT}/engineering/api-build:rc-${MAJORMINOR}.${BUILDNO}; \
-                docker --context=stageserver image tag \
-                    ${MSR_FQDN_PORT}/engineering/api-build:rc-${MAJORMINOR}.${BUILDNO} \
-                    ${MSR_FQDN_PORT}/engineering/api:${MAJORMINOR}.${BUILDNO} ; \
-                echo "DEBUG: signing image"; \
-                docker --context=stageserver trust sign ${MSR_FQDN_PORT}/engineering/api:${MAJORMINOR}.${BUILDNO}'
+                sh '''
+                echo "DEBUG: Docker version (local)"
+                docker version
+                
+                echo "DEBUG: Docker trust version (local)"
+                docker trust version || echo "docker trust not installed locally"
+
+                docker --context=stageserver login -u jenkins -p ${MSR_ACCESS_KEY} ${MSR_FQDN_PORT}
+                
+                BUILDNO=$(echo ${TAG} | sed "s/.*\\.//")
+                
+                # Ensure certificates are updated
+                curl -k https://${MSR_FQDN_PORT}/ca -o /usr/local/share/ca-certificates/${MSR_FQDN_PORT}.crt
+                update-ca-certificates
+                
+                # Docker version and trust checking with context
+                echo "DEBUG: Docker version (with --context=stageserver)"
+                docker --context=stageserver version
+                
+                echo "DEBUG: Docker trust version (with --context=stageserver)"
+                docker --context=stageserver trust version || echo "docker trust not installed with context"
+                
+                echo "DEBUG: loading trust key"
+                if docker --context=stageserver trust version > /dev/null 2>&1; then
+                    docker --context=stageserver trust key load ${JENKINS_PK}
+                    echo "DEBUG: pulling and tagging image"
+                    docker --context=stageserver image pull ${MSR_FQDN_PORT}/engineering/api-build:rc-${MAJORMINOR}.${BUILDNO}
+                    docker --context=stageserver image tag ${MSR_FQDN_PORT}/engineering/api-build:rc-${MAJORMINOR}.${BUILDNO} ${MSR_FQDN_PORT}/engineering/api:${MAJORMINOR}.${BUILDNO}
+                    echo "DEBUG: signing image"
+                    docker --context=stageserver trust sign ${MSR_FQDN_PORT}/engineering/api:${MAJORMINOR}.${BUILDNO}
+                else
+                    echo "docker trust not installed with context, skipping signing"
+                fi
+                '''
             }
         }
     }
 
     post {
-        always{
-            sh 'rm -rf ${WORKSPACE}/* ; \
-                helm uninstall integrationtest --namespace testing'
+        always {
+            sh '''
+            echo "Cleaning workspace..."
+            rm -rf ${WORKSPACE}/* 
+            helm uninstall integrationtest --namespace testing
+            '''
         }
     }
 }
