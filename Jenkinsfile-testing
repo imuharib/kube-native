@@ -13,12 +13,6 @@ pipeline {
             }
             steps {
                 sh '''
-                echo "DEBUG: Docker version (local)"
-                docker version
-
-                echo "DEBUG: Docker trust version (local)"
-                docker trust version || echo "docker trust not installed locally"
-
                 docker --context=testserver login -u jenkins -p ${MSR_ACCESS_KEY} ${MSR_FQDN_PORT}
                 docker --context=testserver image pull ${MSR_FQDN_PORT}/engineering/api-test:${TAG}
                 kubectl run $(echo $TAG | tr . -) \
@@ -60,6 +54,7 @@ pipeline {
             }
             steps {
                 sh '''
+                # Debug Docker version and trust locally
                 echo "DEBUG: Docker version (local)"
                 docker version
                 
@@ -74,7 +69,7 @@ pipeline {
                 curl -k https://${MSR_FQDN_PORT}/ca -o /usr/local/share/ca-certificates/${MSR_FQDN_PORT}.crt
                 update-ca-certificates
                 
-                # Docker version and trust checking with context
+                # Debug Docker version and trust with context
                 echo "DEBUG: Docker version (with --context=stageserver)"
                 docker --context=stageserver version
                 
